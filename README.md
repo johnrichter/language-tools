@@ -1,6 +1,6 @@
 # language-tools
 
-Language-specific tooling and helpers. (confirm/refine)
+Language-specific tooling and helpers.
 
 ## Claude Code setup
 

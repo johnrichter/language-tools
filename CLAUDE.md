@@ -1,6 +1,6 @@
 # language-tools
 
-> **Purpose:** Language-specific tooling and helpers. (confirm/refine)
+> **Purpose:** Language-specific tooling and helpers.
 
 One of the sibling repos under `psa-platform`. Worked on directly — not through the PSA `workspace`. Outside `workspace`, Claude has no PSA identity; only the general conventions below apply.
 
