@@ -228,6 +228,14 @@ bin/
 tmp/
 
 ###############################################################################
+# language-tools build output (SC-DISTRIBUTION: artifacts ship via release.yml)
+###############################################################################
+
+# Locally-built binary and release archives — never committed
+/language-tools
+/dist/
+
+###############################################################################
 # Universal caches / logs / temp
 ###############################################################################
 
@@ -245,3 +253,6 @@ tmp/
 **/.claude/settings.local.json
 # Claude Code git worktrees at the repo root
 .claude/worktrees/
+
+# Bootstrap execution log is a committed release record, not a transient log
+!release/bootstrap/*.log

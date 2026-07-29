@@ -1,0 +1,124 @@
+# language-tools v1.0.0 Bootstrap Release Log
+
+Date: 2026-07-28
+Task: M4.P3.T1 — Manual first release of language-tools
+
+## Summary
+
+Manual bootstrap release of language-tools v1.0.0 completed successfully. All per-OS/arch archives built, checksums verified, tag created locally, and guards passed. The release is ready for publish via GitHub (separate step).
+
+## Procedure Executed
+
+### 1. Code Ready
+
+All CI checks passed (code at commit 0bc1723):
+- gofmt: OK
+- go vet: OK
+- go build: OK
+- go test: OK
+- golangci-lint: OK
+
+### 2. Binary Built
+
+```
+go build -trimpath -ldflags='-s -w' -o language-tools .
+```
+
+Binary: ELF 64-bit LSB executable, ARM aarch64, version 1 (SYSV), dynamically linked, stripped
+
+### 3. Release Archives Built
+
+Command:
+```
+./language-tools release build --version v1.0.0 --output-dir dist
+```
+
+Output:
+- language-tools_v1.0.0_linux_amd64.tar.gz (1.8M)
+- language-tools_v1.0.0_linux_arm64.tar.gz (1.7M)
+- language-tools_v1.0.0_darwin_amd64.tar.gz (1.8M)
+- language-tools_v1.0.0_darwin_arm64.tar.gz (1.7M)
+- dist/checksums.txt (430 bytes, SHA256 manifest)
+
+Exit code: 0 (success)
+
+### 4. Checksums Verified
+
+All 4 archives verified against SHA256 checksums:
+- language-tools_v1.0.0_linux_amd64.tar.gz: OK
+- language-tools_v1.0.0_linux_arm64.tar.gz: OK
+- language-tools_v1.0.0_darwin_amd64.tar.gz: OK
+- language-tools_v1.0.0_darwin_arm64.tar.gz: OK
+
+### 5. Release Tag Created
+
+Tag: v1.0.0 (commit 0bc1723)
+
+Verified with `git show v1.0.0`:
+```
+commit 0bc1723cea3c0838018ee36724f0033f1a2992f7 (tag: v1.0.0)
+Merge: e8533f9 6d61c33
+Author: John Richter <john@jrichter.io>
+Date:   Mon Jul 27 13:57:48 2026 +0000
+
+    Add language-tools CLI with build/release pipeline
+```
+
+### 6. Conformance Verified
+
+SC-VERSIONING guard (tag-prefix.sh):
+```
+tag-prefix: OK - 'v1.0.0' conforms to SC-VERSIONING
+Exit code: 0
+```
+
+SC-DISTRIBUTION guard (no-committed-binaries.sh):
+```
+no-committed-binaries: OK - no committed binary found under .
+Exit code: 0
+```
+
+## Artifacts
+
+Disk location: `/home/bits/Development/workspaces/psa-platform/language-tools/.claude/worktrees/toolbelt/dist/`
+
+- dist/language-tools_v1.0.0_linux_amd64.tar.gz
+- dist/language-tools_v1.0.0_linux_arm64.tar.gz
+- dist/language-tools_v1.0.0_darwin_amd64.tar.gz
+- dist/language-tools_v1.0.0_darwin_arm64.tar.gz
+- dist/checksums.txt
+
+## Next Steps
+
+1. **Publish Release (Manual Step)**: The tag exists locally; publish to GitHub via:
+   ```
+   gh release create v1.0.0 --title v1.0.0 --generate-notes dist/*.tar.gz dist/checksums.txt
+   ```
+   Or trigger the `release.yml` workflow manually via GitHub Actions.
+
+2. **Subsequent Releases**: From v1.1.0 onward, use the bootstrapped language-tools binary:
+   ```
+   language-tools release build --version v1.1.0 --output-dir dist
+   ```
+   The binary will be obtained from the GitHub release assets, making future releases self-hosted.
+
+## Documentation
+
+Bootstrap procedure fully documented in `release/bootstrap/README.md`:
+- Overview of bootstrap necessity
+- Step-by-step procedure
+- Verification and conformance checks
+- Transition plan for self-hosted releases
+- Troubleshooting guide
+
+## Acceptance Criteria Met
+
+✓ Pinned language-tools release tag (v1.0.0) exists locally
+✓ Per-OS/arch archives present and verified (4 targets: linux/amd64, linux/arm64, darwin/amd64, darwin/arm64)
+✓ Checksums computed and verified (SHA256, all OK)
+✓ Bootstrap procedure recorded in release/bootstrap/README.md
+✓ SC-VERSIONING guard passed (tag conforms)
+✓ SC-DISTRIBUTION guard passed (no committed binaries)
+✓ PROD-BAR met (reproducible build, verified checksums, cryptographic integrity)
+
+Procedure is fully reproducible and documented for future manual releases if needed.
