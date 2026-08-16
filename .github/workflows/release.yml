@@ -10,11 +10,9 @@
 # true, so a change to this file or the release build path can be exercised without
 # cutting a tag or touching GitHub Releases.
 #
-# go.mod `replace`s onto ../ai-shared-lib/go/* (see ci.yml's header). actions/checkout
-# refuses any path outside $GITHUB_WORKSPACE, so both repos check out as workspace
-# siblings (language-tools, ai-shared-lib) and every later step runs with
-# working-directory: language-tools, which resolves the replace target the same way a
-# local dev checkout does.
+# go.mod has no local replace directive: it resolves claude-shared-tooling's go/*
+# modules straight from the public module proxy at their tagged versions, so a single
+# checkout of this repo is enough for go build/test to work.
 #
 # This workflow re-runs tag-prefix.sh itself rather than trusting ci.yml's guardrail job:
 # a tag push fires both workflows independently, and neither GitHub Actions run gates the
@@ -52,13 +50,6 @@ jobs:
       - name: Tag conforms to SC-VERSIONING
         if: ${{ github.event_name == 'push' }}
         run: bash release/guard/tag-prefix.sh "${GITHUB_REF_NAME}"
-
-      - name: Checkout ai-shared-lib sibling (go.mod replace target)
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-        with:
-          repository: johnrichter/claude-shared-tooling
-          token: ${{ secrets.SIBLING_REPO_TOKEN }}
-          path: ai-shared-lib
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
