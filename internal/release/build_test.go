@@ -189,12 +189,12 @@ func verifyTarGzContainsBinary(t *testing.T, archivePath, wantName string) {
 	if err != nil {
 		t.Fatalf("open %s: %v", archivePath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatalf("gzip reader for %s: %v", archivePath, err)
 	}
-	defer gz.Close()
+	defer func() { _ = gz.Close() }()
 	tr := tar.NewReader(gz)
 	hdr, err := tr.Next()
 	if err != nil {
