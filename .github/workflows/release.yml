@@ -76,7 +76,7 @@ jobs:
             tag="v0.0.0-dryrun.${GITHUB_RUN_ID}"
           fi
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
-          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build this binary, then cross-compile the release archives
         run: |
