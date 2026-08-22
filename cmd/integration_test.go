@@ -1,7 +1,7 @@
 // Integration tests exercise the built language-tools binary as a real
-// subprocess against a fixture Rust crate, per the task's test strategy:
-// build/test/lint return a bounded RunResult, --help is complete, and exit
-// codes follow clikit's taxonomy.
+// subprocess against fixture Rust and Go modules, per the task's test
+// strategy: build/test/lint return a bounded RunResult, --help is complete,
+// and exit codes follow clikit's taxonomy.
 package cmd_test
 
 import (
@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -279,6 +280,192 @@ func TestVet_MissingLanguageIsUsageError(t *testing.T) {
 	r, exit := runCLI(t, bin, "vet", "--dir", t.TempDir())
 	if r.Status != "usage" || exit != 50 {
 		t.Fatalf("status=%s exit=%d, want usage/50: %+v", r.Status, exit, r)
+	}
+}
+
+// goLintFixture returns the absolute path of the checked-in fixture module
+// named under internal/lint/testdata, and fails if it is absent — these
+// tests read a fixture, and never write one.
+func goLintFixture(t *testing.T, name string) string {
+	t.Helper()
+	dir, err := filepath.Abs(filepath.Join("..", "internal", "lint", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+		t.Fatalf("lint fixture %q is missing, so this test proves nothing: %v", name, err)
+	}
+	return dir
+}
+
+// toolCodes returns the analyzer code carried in each diagnostic's context.
+func toolCodes(diags []map[string]any) []string {
+	codes := make([]string, 0, len(diags))
+	for _, d := range diags {
+		context, _ := d["context"].(map[string]any)
+		code, _ := context["tool_code"].(string)
+		codes = append(codes, code)
+	}
+	return codes
+}
+
+// messagesFor returns the messages of every diagnostic whose analyzer code
+// is code.
+func messagesFor(diags []map[string]any, code string) []string {
+	var msgs []string
+	for _, d := range diags {
+		context, _ := d["context"].(map[string]any)
+		if got, _ := context["tool_code"].(string); got == code {
+			msg, _ := d["message"].(string)
+			msgs = append(msgs, msg)
+		}
+	}
+	return msgs
+}
+
+// TestLint_GoSixFamilyFixture_ReportsEveryFamily is the SC7c acceptance: the
+// fixture plants one defect per analyzer family, and a lint of it must
+// surface all six and fail the gate.
+func TestLint_GoSixFamilyFixture_ReportsEveryFamily(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", goLintFixture(t, "sixfamilies"), "--log-dir", t.TempDir())
+	if r.Status != "gate_negative" || exit != 20 {
+		t.Fatalf("status=%s exit=%d, want gate_negative/20: %+v", r.Status, exit, r)
+	}
+	codes := toolCodes(r.Errors)
+	for family, pattern := range map[string]*regexp.Regexp{
+		"unchecked error":        regexp.MustCompile(`^errcheck$`),
+		"ineffectual assignment": regexp.MustCompile(`^ineffassign$`),
+		"staticcheck SA":         regexp.MustCompile(`^SA\d+$`),
+		"simple S":               regexp.MustCompile(`^S\d+$`),
+		"stylecheck ST":          regexp.MustCompile(`^ST\d+$`),
+		"unused U1000":           regexp.MustCompile(`^U1000$`),
+	} {
+		found := false
+		for _, code := range codes {
+			if pattern.MatchString(code) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no diagnostic for the %s family; reported codes: %v", family, codes)
+		}
+	}
+}
+
+// TestLint_GoSixFamilyFixture_ReportsUnusedFuncAndType is the SC8
+// acceptance: U1000 reports nothing through its pass, so only a driver that
+// reads its result surfaces the family at all — for a function and for a
+// type alike.
+func TestLint_GoSixFamilyFixture_ReportsUnusedFuncAndType(t *testing.T) {
+	bin := buildCLI(t)
+	r, _ := runCLI(t, bin, "lint", "--language", "go", "--dir", goLintFixture(t, "sixfamilies"), "--log-dir", t.TempDir())
+	msgs := messagesFor(r.Errors, "U1000")
+	if len(msgs) < 2 {
+		t.Fatalf("want at least two U1000 diagnostics, got %d: %v", len(msgs), msgs)
+	}
+	for _, kind := range []string{"func ", "type "} {
+		found := false
+		for _, msg := range msgs {
+			if strings.Contains(msg, kind) && strings.Contains(msg, "is unused") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("no U1000 diagnostic for an unused %sobject: %v", kind, msgs)
+		}
+	}
+}
+
+// TestLint_GoCleanFixture_IsSuccess pins the other half of SC7c: the same
+// six shapes written correctly report nothing and pass the gate.
+func TestLint_GoCleanFixture_IsSuccess(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", goLintFixture(t, "clean"), "--log-dir", t.TempDir())
+	if r.Status != "success" || exit != 0 {
+		t.Fatalf("status=%s exit=%d, want success/0: %+v", r.Status, exit, r)
+	}
+	if len(r.Errors) != 0 || len(r.Caveats) != 0 {
+		t.Errorf("clean fixture reported diagnostics: errors=%v caveats=%v", r.Errors, r.Caveats)
+	}
+}
+
+// TestLint_Go_RunsInProcess pins SC7a: the Go lint check names the
+// in-process route's fixed tool and spawns nothing, which the run's own log
+// records as an empty command and no captured tool output.
+func TestLint_Go_RunsInProcess(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", goLintFixture(t, "clean"), "--log-dir", t.TempDir())
+	if exit != 0 {
+		t.Fatalf("exit=%d, want 0: %+v", exit, r)
+	}
+	if tool, _ := r.Data["tool"].(string); tool != "go-analysis" {
+		t.Errorf("data.tool = %v, want go-analysis", r.Data["tool"])
+	}
+	logRef, _ := r.Data["log_ref"].(string)
+	raw, err := os.ReadFile(logRef)
+	if err != nil {
+		t.Fatalf("read run log: %v", err)
+	}
+	var detail struct {
+		Tool    string   `json:"tool"`
+		Command []string `json:"command"`
+		Stdout  string   `json:"stdout"`
+		Stderr  string   `json:"stderr"`
+	}
+	if err := json.Unmarshal(raw, &detail); err != nil {
+		t.Fatalf("run log is not valid JSON: %v", err)
+	}
+	if detail.Tool != "go-analysis" {
+		t.Errorf("log tool = %q, want go-analysis", detail.Tool)
+	}
+	if len(detail.Command) != 0 {
+		t.Errorf("log command = %v, want empty: an in-process run spawns nothing", detail.Command)
+	}
+	if detail.Stdout != "" || detail.Stderr != "" {
+		t.Errorf("log carries tool output (stdout=%q stderr=%q); nothing was spawned to produce it", detail.Stdout, detail.Stderr)
+	}
+}
+
+// TestLint_GoCurrentDir_ReachesTheAdapter pins SC4: `--language go` resolves
+// to the adapter this binary registers at start-up, rather than failing as
+// an unregistered language the way it did before registration.
+func TestLint_GoCurrentDir_ReachesTheAdapter(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", ".", "--log-dir", t.TempDir())
+	if r.Status != "success" && r.Status != "gate_negative" {
+		t.Fatalf("status=%s exit=%d, want a lint verdict rather than a dispatch failure: %+v", r.Status, exit, r)
+	}
+	if tool, _ := r.Data["tool"].(string); tool != "go-analysis" {
+		t.Errorf("data.tool = %v, want go-analysis", r.Data["tool"])
+	}
+}
+
+// TestFormat_GoUnformattedFixture_IsGateNegative pins SC4a: gofmt -l exits 0
+// even when it lists an unformatted file, so the adapter's parse of that
+// listing is the only thing that keeps the check from passing.
+func TestFormat_GoUnformattedFixture_IsGateNegative(t *testing.T) {
+	requireGofmt(t)
+	bin := buildCLI(t)
+	dir := goModuleFixture(t, false)
+	if err := os.WriteFile(filepath.Join(dir, "unformatted.go"), []byte("package main\n\nfunc  greet( ) string {\nreturn \"hi\"\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r, exit := runCLI(t, bin, "format", "--language", "go", "--dir", dir, "--log-dir", t.TempDir())
+	if r.Status != "gate_negative" || exit != 20 {
+		t.Fatalf("status=%s exit=%d, want gate_negative/20: %+v", r.Status, exit, r)
+	}
+	if len(r.Errors) == 0 {
+		t.Fatal("gate_negative result carries no errors")
+	}
+}
+
+func requireGofmt(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("gofmt"); err != nil {
+		t.Skip("gofmt not on PATH")
 	}
 }
 
