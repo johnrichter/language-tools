@@ -23,20 +23,21 @@ type exitError struct{ code int }
 
 func (e *exitError) Error() string { return fmt.Sprintf("exit code %d", e.code) }
 
-// newRootCmd builds the command tree: build/test/lint, each a thin
-// toolchain.Run wrapper, plus release build for this binary's own
+// newRootCmd builds the command tree: build/test/lint/format/vet, each a
+// thin toolchain.Run wrapper, plus release build for this binary's own
 // per-OS/arch distribution.
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "language-tools",
-		Short: "Per-language build/test/lint and this CLI's own release-build orchestration",
+		Short: "Per-language build/test/lint/format/vet and this CLI's own release-build orchestration",
 		Long: `language-tools composes the shared toolchain, clikit and sysops libraries
-into one CLI: build, test and lint any toolchain-registered language through
-a single bounded RunResult, and cross-compile this binary into checksummed
-per-OS/arch release archives.`,
+into one CLI: build, test, lint, format and vet any toolchain-registered
+language through a single bounded RunResult, and cross-compile this binary
+into checksummed per-OS/arch release archives.`,
 		Example: strings.TrimLeft(`
   language-tools build --language rust --dir ./crates/example
   language-tools test --language rust --dir ./crates/example --allow-warnings
+  language-tools vet --language rust --dir ./crates/example
   language-tools release build --version v1.2.3 --output-dir dist
 `, "\n"),
 		SilenceUsage:  true,
@@ -46,6 +47,8 @@ per-OS/arch release archives.`,
 	root.AddCommand(newCheckCmd("build"))
 	root.AddCommand(newCheckCmd("test"))
 	root.AddCommand(newCheckCmd("lint"))
+	root.AddCommand(newCheckCmd("format"))
+	root.AddCommand(newCheckCmd("vet"))
 	root.AddCommand(newReleaseCmd())
 	return root
 }
@@ -137,6 +140,26 @@ func finishUsage(cmd *cobra.Command, code, message string) error {
 		return buildErr
 	}
 	result, buildErr := clikit.NewUsage(commandPath(cmd), nil, []clikit.Diagnostic{diag}, nil)
+	if buildErr != nil {
+		return buildErr
+	}
+	return finish(cmd, result)
+}
+
+// finishUnsupported builds and emits a clikit.StatusUnsupported result: the
+// invocation is well-formed but the requested check has no equivalent on
+// this language's adapter (e.g. `vet` on a language without one). code must
+// be in the "unsupported" class.
+func finishUnsupported(cmd *cobra.Command, code, message string) error {
+	diag, buildErr := clikit.NewError(
+		code, result.OneLine(message),
+		clikit.Manual(fmt.Sprintf("run `%s --help` for the checks this language's adapter supports", cmd.CommandPath())),
+		nil,
+	)
+	if buildErr != nil {
+		return buildErr
+	}
+	result, buildErr := clikit.NewUnsupported(commandPath(cmd), nil, []clikit.Diagnostic{diag}, nil)
 	if buildErr != nil {
 		return buildErr
 	}

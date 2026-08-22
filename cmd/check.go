@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// newCheckCmd builds the build/test/lint subcommand for check: one thin
-// wrapper over toolchain.Run shared by all three, since the only thing that
-// differs between them is which check toolchain runs.
+// newCheckCmd builds the build/test/lint/format/vet subcommand for check:
+// one thin wrapper over toolchain.Run shared by all of them, since the only
+// thing that differs between them is which check toolchain runs.
 func newCheckCmd(check toolchain.Check) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     string(check),
@@ -63,11 +64,14 @@ func runCheck(cmd *cobra.Command, check toolchain.Check) error {
 		Timeout:       cfg.Timeout,
 	})
 	if err != nil {
-		// toolchain.Run returns an unwrapped error for every failure mode it
-		// has, including an unregistered --language -- a caller mistake, not
-		// an infrastructure fault -- and exposes no way to tell them apart
-		// from here. Until it does, that one case is misclassified as
-		// internal below rather than usage/unsupported.
+		if errors.Is(err, toolchain.ErrUnsupportedCheck) {
+			return finishUnsupported(cmd, "unsupported.toolchain.check_not_supported", fmt.Sprintf("%s for language %s: %s", check, cfg.Language, err))
+		}
+		// toolchain.Run returns an unwrapped error for every other failure
+		// mode it has, including an unregistered --language -- a caller
+		// mistake, not an infrastructure fault -- and exposes no way to tell
+		// them apart from here. Until it does, that one case is
+		// misclassified as internal below rather than usage.
 		return finishErr(cmd, "internal.toolchain.run_failed", fmt.Sprintf("run %s for language %s", check, cfg.Language), err)
 	}
 

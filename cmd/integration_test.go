@@ -96,7 +96,7 @@ func TestHelp_TopLevelIsComplete(t *testing.T) {
 		t.Fatalf("--help exited non-zero: %v\n%s", err, out)
 	}
 	text := string(out)
-	for _, want := range []string{"build", "test", "lint", "release", "Examples:", "Usage:"} {
+	for _, want := range []string{"build", "test", "lint", "format", "vet", "release", "Examples:", "Usage:"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("--help missing %q:\n%s", want, text)
 		}
@@ -107,6 +107,7 @@ func TestHelp_EverySubcommandHasHelp(t *testing.T) {
 	bin := buildCLI(t)
 	for _, args := range [][]string{
 		{"build", "--help"}, {"test", "--help"}, {"lint", "--help"},
+		{"format", "--help"}, {"vet", "--help"},
 		{"release", "--help"}, {"release", "build", "--help"},
 	} {
 		out, err := exec.Command(bin, args...).CombinedOutput()
@@ -231,6 +232,51 @@ func TestBuild_NonexistentConfigIsUsageError(t *testing.T) {
 	bin := buildCLI(t)
 	cfgPath := filepath.Join(t.TempDir(), "does-not-exist.yaml")
 	r, exit := runCLI(t, bin, "build", "--language", "rust", "--dir", t.TempDir(), "--config", cfgPath)
+	if r.Status != "usage" || exit != 50 {
+		t.Fatalf("status=%s exit=%d, want usage/50: %+v", r.Status, exit, r)
+	}
+}
+
+// TestVet_UnsupportedOnRustIsUnsupportedExit80 pins the SC3 contract: cargo
+// has no vet-equivalent check, so toolchain.Run returns an error wrapping
+// ErrUnsupportedCheck, and the CLI must classify that as clikit's
+// "unsupported" status/exit-80 class rather than falling through to the
+// generic internal-fault branch (exit 90). This does not require cargo on
+// PATH -- the adapter rejects the check before invoking any tool.
+func TestVet_UnsupportedOnRustIsUnsupportedExit80(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "vet", "--language", "rust", "--dir", ".", "--log-dir", t.TempDir())
+	if r.Status != "unsupported" || exit != 80 {
+		t.Fatalf("status=%s exit=%d, want unsupported/80: %+v", r.Status, exit, r)
+	}
+	if len(r.Errors) == 0 {
+		t.Fatal("unsupported result carries no errors")
+	}
+	code, _ := r.Errors[0]["code"].(string)
+	if code != "unsupported.toolchain.check_not_supported" {
+		t.Errorf("errors[0].code = %q, want unsupported.toolchain.check_not_supported", code)
+	}
+}
+
+// TestFormat_UnregisteredLanguage_ExitCodeClass exercises the format command
+// specifically (not just build/test/lint) against an unregistered language,
+// confirming the new command shares runCheck's full error path rather than
+// some divergent copy.
+func TestFormat_UnregisteredLanguage_ExitCodeClass(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "format", "--language", "cobol", "--dir", t.TempDir())
+	if r.Status != "internal" || exit != 90 {
+		t.Fatalf("status=%s exit=%d, want internal/90: %+v", r.Status, exit, r)
+	}
+}
+
+// TestVet_MissingLanguageIsUsageError checks the shared usage-validation
+// path (missing --language) still runs ahead of the toolchain dispatch for
+// the new vet command, so a caller mistake isn't misrouted through the
+// unsupported-check branch.
+func TestVet_MissingLanguageIsUsageError(t *testing.T) {
+	bin := buildCLI(t)
+	r, exit := runCLI(t, bin, "vet", "--dir", t.TempDir())
 	if r.Status != "usage" || exit != 50 {
 		t.Fatalf("status=%s exit=%d, want usage/50: %+v", r.Status, exit, r)
 	}
