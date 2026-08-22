@@ -294,6 +294,129 @@ func TestBuild_UnknownTargetAbortsWholeRun(t *testing.T) {
 	}
 }
 
+// TestBuild_ArgvNamesBuildVCS pins the `go build` argv itself: it must name
+// -buildvcs=true explicitly rather than relying on Go's inconsistent
+// default (embed VCS info in a real clone, silently omit it elsewhere).
+func TestBuild_ArgvNamesBuildVCS(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+	moduleDir := fixtureModule(t)
+	// go build only embeds VCS info for a module dir inside a repo with a
+	// commit; a bare temp dir has neither.
+	for _, args := range [][]string{
+		{"init"},
+		{"-c", "user.email=test@test", "-c", "user.name=test", "add", "."},
+		{"-c", "user.email=test@test", "-c", "user.name=test", "commit", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = moduleDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	outputDir := t.TempDir()
+
+	if _, err := Build(context.Background(), Options{
+		ModuleDir: moduleDir,
+		OutputDir: outputDir,
+		Binaries:  []Binary{{Name: "fixture", Package: "."}},
+		Version:   "0.0.1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}},
+		Timeout:   2 * time.Minute,
+	}); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archivePath string
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tar.gz") {
+			archivePath = filepath.Join(outputDir, e.Name())
+		}
+	}
+	if archivePath == "" {
+		t.Fatal("no archive produced")
+	}
+
+	f, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = f.Close() }()
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = gz.Close() }()
+	tr := tar.NewReader(gz)
+	if _, err := tr.Next(); err != nil {
+		t.Fatal(err)
+	}
+	binBytes, err := io.ReadAll(tr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpBin := filepath.Join(t.TempDir(), "fixture")
+	if err := os.WriteFile(tmpBin, binBytes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	out, err := exec.Command("go", "version", "-m", tmpBin).CombinedOutput()
+	if err != nil {
+		t.Fatalf("go version -m: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "vcs.revision") {
+		t.Errorf("built binary has no vcs.revision build info; -buildvcs=true was not honored:\n%s", out)
+	}
+}
+
+// TestBuild_FailsWithoutGitOnPATH exercises the argv change's whole point:
+// with -buildvcs=true and git absent, `go build` must hard-fail rather than
+// silently ship a binary with no VCS stamp.
+func TestBuild_FailsWithoutGitOnPATH(t *testing.T) {
+	goPath, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	// A real clone: `go build -buildvcs=true` only attempts VCS detection
+	// (and thus can fail without git) when ModuleDir is inside a repo.
+	if _, err := exec.Command("git", "-C", "../..", "rev-parse", "--is-inside-work-tree").Output(); err != nil {
+		t.Skip("test requires running inside a git clone")
+	}
+
+	moduleDir, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	outputDir := t.TempDir()
+
+	// A PATH containing only the directory holding the real `go` binary,
+	// with no `git` anywhere on it.
+	pathDir := filepath.Dir(goPath)
+	t.Setenv("PATH", pathDir)
+
+	_, err = Build(context.Background(), Options{
+		ModuleDir: moduleDir,
+		OutputDir: outputDir,
+		Binaries:  []Binary{{Name: "language-tools", Package: "."}},
+		Version:   "0.0.1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}},
+		Timeout:   2 * time.Minute,
+	})
+	if err == nil {
+		t.Fatal("Build with git absent from PATH: want error, got none")
+	}
+	if !strings.Contains(err.Error(), "error obtaining VCS status") {
+		t.Errorf("Build error = %v, want it to contain %q", err, "error obtaining VCS status")
+	}
+}
+
 func verifyTarGzContainsBinary(t *testing.T, archivePath, wantName string) {
 	t.Helper()
 	f, err := os.Open(archivePath)

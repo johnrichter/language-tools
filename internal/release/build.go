@@ -159,7 +159,7 @@ func buildOne(ctx context.Context, opts Options, binary Binary, target Target) (
 	binPath := filepath.Join(workDir, binName)
 
 	env := append(os.Environ(), "GOOS="+target.OS, "GOARCH="+target.Arch, "CGO_ENABLED=0")
-	argv := []string{"build", "-trimpath", "-ldflags=-s -w", "-o", binPath, binary.Package}
+	argv := []string{"build", "-trimpath", "-buildvcs=true", "-ldflags=-s -w", "-o", binPath, binary.Package}
 	execRes, err := sysops.Run(ctx, "go", argv, sysops.Options{Dir: opts.ModuleDir, Env: env, Timeout: opts.Timeout})
 	if err != nil {
 		return Artifact{}, fmt.Errorf("run go build: %w", err)
