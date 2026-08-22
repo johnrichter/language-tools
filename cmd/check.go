@@ -7,13 +7,16 @@ import (
 
 	"github.com/johnrichter/claude-shared-tooling/go/toolchain"
 	"github.com/johnrichter/language-tools/internal/config"
+	"github.com/johnrichter/language-tools/internal/pin"
 	"github.com/johnrichter/language-tools/internal/result"
 	"github.com/spf13/cobra"
 )
 
 // newCheckCmd builds the build/test/lint/format/vet subcommand for check:
-// one thin wrapper over toolchain.Run shared by all of them, since the only
-// thing that differs between them is which check toolchain runs.
+// one thin wrapper over pin.Check and toolchain.Run shared by all of them,
+// since the only thing that differs between them is which check toolchain
+// runs. pin.Check always runs first: a pin that fails to hold gates the run
+// before the tool it would have invoked ever starts.
 func newCheckCmd(check toolchain.Check) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     string(check),
@@ -53,11 +56,21 @@ func runCheck(cmd *cobra.Command, check toolchain.Check) error {
 		return finishUsage(cmd, "usage.cli.dir_not_found", fmt.Sprintf("--dir %s: %s", cfg.Dir, err))
 	}
 
-	run, err := toolchain.Run(cmd.Context(), toolchain.Target{
+	target := toolchain.Target{
 		Language: cfg.Language,
 		Check:    check,
 		Dir:      cfg.Dir,
-	}, toolchain.Options{
+	}
+
+	gate, err := pin.Check(cmd.Context(), commandPath(cmd), target)
+	if err != nil {
+		return finishErr(cmd, "internal.pin.check_failed", "check toolchain pin", err)
+	}
+	if gate != nil {
+		return finish(cmd, gate)
+	}
+
+	run, err := toolchain.Run(cmd.Context(), target, toolchain.Options{
 		AllowWarnings: cfg.AllowWarnings,
 		LogDir:        cfg.LogDir,
 		CacheDir:      cfg.CacheDir,

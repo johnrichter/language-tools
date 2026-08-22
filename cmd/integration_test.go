@@ -6,6 +6,7 @@ package cmd_test
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -58,6 +59,16 @@ func rustFixture(t *testing.T, broken, warn bool) string {
 	if err := os.WriteFile(filepath.Join(dir, "src", "main.rs"), []byte(main), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeMisePin(t, dir, "rust", "1.70.0")
+	// The rust adapter runs `cargo ... --locked`, which errors unless a
+	// Cargo.lock already exists; resolve one up front (source is never
+	// compiled here, so even the broken fixture locks cleanly) so callers
+	// exercise the real tool rather than cargo's missing-lock refusal.
+	lock := exec.Command("cargo", "generate-lockfile")
+	lock.Dir = dir
+	if out, err := lock.CombinedOutput(); err != nil {
+		t.Fatalf("cargo generate-lockfile: %v\n%s", err, out)
+	}
 	return dir
 }
 
@@ -65,6 +76,24 @@ func requireCargo(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("cargo"); err != nil {
 		t.Skip("cargo not on PATH")
+	}
+}
+
+func requireRustc(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("rustc"); err != nil {
+		t.Skip("rustc not on PATH")
+	}
+}
+
+// writeMisePin writes dir/mise.toml pinning language to version — every
+// routed check requires one, so a fixture that doesn't carry its own must
+// get one before it can exercise anything past the pin check.
+func writeMisePin(t *testing.T, dir, language, version string) {
+	t.Helper()
+	content := fmt.Sprintf("[tools]\n%s = %q\n", language, version)
+	if err := os.WriteFile(filepath.Join(dir, "mise.toml"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -215,10 +244,22 @@ func TestUnknownSubcommand_IsUsageError(t *testing.T) {
 // tolerating a status/exit code drift.
 func TestBuild_UnregisteredLanguage_ExitCodeClass(t *testing.T) {
 	bin := buildCLI(t)
-	r, exit := runCLI(t, bin, "build", "--language", "cobol", "--dir", t.TempDir())
+	r, exit := runCLI(t, bin, "build", "--language", "cobol", "--dir", unregisteredLanguageFixture(t))
 	if r.Status != "internal" || exit != 90 {
 		t.Fatalf("status=%s exit=%d, want internal/90 (known gap: see toolchain.Run's lookup miss); update this test once toolchain distinguishes an unregistered language from an infrastructure fault", r.Status, exit)
 	}
+}
+
+// unregisteredLanguageFixture returns a temp dir pinning "cobol" (an
+// unregistered language) itself, so the pin check ahead of dispatch passes
+// readPin and floor validation, then fails resolving "cobol"'s toolchain
+// version — an infrastructure fault, not the missing-pin gate a dir with no
+// mise.toml at all would report.
+func unregisteredLanguageFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeMisePin(t, dir, "cobol", "1.0.0")
+	return dir
 }
 
 func TestBuild_NonexistentDirIsUsageError(t *testing.T) {
@@ -242,11 +283,18 @@ func TestBuild_NonexistentConfigIsUsageError(t *testing.T) {
 // has no vet-equivalent check, so toolchain.Run returns an error wrapping
 // ErrUnsupportedCheck, and the CLI must classify that as clikit's
 // "unsupported" status/exit-80 class rather than falling through to the
-// generic internal-fault branch (exit 90). This does not require cargo on
-// PATH -- the adapter rejects the check before invoking any tool.
+// generic internal-fault branch (exit 90). The target dir is the checked-in
+// pin fixture whose mise.toml pin an installed rustc satisfies, so the pin
+// check ahead of dispatch passes and this exercises toolchain.Run's own
+// unsupported-check rejection -- it never spawns cargo.
 func TestVet_UnsupportedOnRustIsUnsupportedExit80(t *testing.T) {
+	requireRustc(t)
 	bin := buildCLI(t)
-	r, exit := runCLI(t, bin, "vet", "--language", "rust", "--dir", ".", "--log-dir", t.TempDir())
+	dir, err := filepath.Abs(filepath.Join("..", "internal", "pin", "testdata", "rust", "fixture1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, exit := runCLI(t, bin, "vet", "--language", "rust", "--dir", dir, "--log-dir", t.TempDir())
 	if r.Status != "unsupported" || exit != 80 {
 		t.Fatalf("status=%s exit=%d, want unsupported/80: %+v", r.Status, exit, r)
 	}
@@ -265,7 +313,7 @@ func TestVet_UnsupportedOnRustIsUnsupportedExit80(t *testing.T) {
 // some divergent copy.
 func TestFormat_UnregisteredLanguage_ExitCodeClass(t *testing.T) {
 	bin := buildCLI(t)
-	r, exit := runCLI(t, bin, "format", "--language", "cobol", "--dir", t.TempDir())
+	r, exit := runCLI(t, bin, "format", "--language", "cobol", "--dir", unregisteredLanguageFixture(t))
 	if r.Status != "internal" || exit != 90 {
 		t.Fatalf("status=%s exit=%d, want internal/90: %+v", r.Status, exit, r)
 	}
@@ -283,18 +331,85 @@ func TestVet_MissingLanguageIsUsageError(t *testing.T) {
 	}
 }
 
-// goLintFixture returns the absolute path of the checked-in fixture module
-// named under internal/lint/testdata, and fails if it is absent — these
-// tests read a fixture, and never write one.
+// failingPinFixture writes a minimal Go module (go builds, tests, vets and
+// formats clean) pinned to a go version no installed toolchain will ever
+// satisfy — the pin check ahead of dispatch must gate every one of the five
+// routed commands on this fixture before any of their tools run. Go is the
+// one language every routed check supports, so one fixture covers all five.
+func failingPinFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/pinfail\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeMisePin(t, dir, "go", "99.0.0")
+	return dir
+}
+
+// TestPinFailure_ProducesNoToolOutput is the task's core acceptance: a
+// fixture whose pin fails must produce no tool output, checked separately
+// for each of the five routed commands so a later command taking its own
+// path off the shared factory would still be caught.
+func TestPinFailure_ProducesNoToolOutput(t *testing.T) {
+	bin := buildCLI(t)
+	dir := failingPinFixture(t)
+	for _, check := range []string{"build", "test", "lint", "format", "vet"} {
+		t.Run(check, func(t *testing.T) {
+			logDir := filepath.Join(t.TempDir(), "log")
+			r, exit := runCLI(t, bin, check, "--language", "go", "--dir", dir, "--log-dir", logDir)
+			if r.Status != "gate_negative" || exit != 20 {
+				t.Fatalf("status=%s exit=%d, want gate_negative/20: %+v", r.Status, exit, r)
+			}
+			if len(r.Errors) == 0 {
+				t.Fatal("gate_negative result carries no errors")
+			}
+			if _, ok := r.Data["tool"]; ok {
+				t.Errorf("data carries a %q key; the pin check should have gated before any tool ran: %+v", "tool", r.Data)
+			}
+			if _, ok := r.Data["log_ref"]; ok {
+				t.Errorf("data carries a %q key; the pin check should have gated before any run log was written: %+v", "log_ref", r.Data)
+			}
+			if entries, err := os.ReadDir(logDir); err == nil && len(entries) != 0 {
+				t.Errorf("--log-dir %s is non-empty; a gated pin check should never reach the code that writes a run log: %v", logDir, entries)
+			}
+		})
+	}
+}
+
+// goLintFixture copies the checked-in fixture module named under
+// internal/lint/testdata into a fresh temp dir, pins it (every routed check
+// needs one, and the checked-in fixture itself stays read-only), and
+// returns the copy's path. Fails if the fixture is absent.
 func goLintFixture(t *testing.T, name string) string {
 	t.Helper()
-	dir, err := filepath.Abs(filepath.Join("..", "internal", "lint", "testdata", name))
+	src, err := filepath.Abs(filepath.Join("..", "internal", "lint", "testdata", name))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "go.mod")); err != nil {
+	if _, err := os.Stat(filepath.Join(src, "go.mod")); err != nil {
 		t.Fatalf("lint fixture %q is missing, so this test proves nothing: %v", name, err)
 	}
+	entries, err := os.ReadDir(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(src, e.Name()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, e.Name()), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeMisePin(t, dir, "go", "1.26.0")
 	return dir
 }
 
@@ -434,7 +549,7 @@ func TestLint_Go_RunsInProcess(t *testing.T) {
 // an unregistered language the way it did before registration.
 func TestLint_GoCurrentDir_ReachesTheAdapter(t *testing.T) {
 	bin := buildCLI(t)
-	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", ".", "--log-dir", t.TempDir())
+	r, exit := runCLI(t, bin, "lint", "--language", "go", "--dir", goLintFixture(t, "clean"), "--log-dir", t.TempDir())
 	if r.Status != "success" && r.Status != "gate_negative" {
 		t.Fatalf("status=%s exit=%d, want a lint verdict rather than a dispatch failure: %+v", r.Status, exit, r)
 	}
@@ -521,6 +636,7 @@ func goModuleFixture(t *testing.T, broken bool) string {
 	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(main), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeMisePin(t, dir, "go", "1.21")
 	return dir
 }
 
