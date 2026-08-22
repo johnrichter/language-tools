@@ -61,25 +61,29 @@ func LoadCheck(flags *pflag.FlagSet, configFile string) (*Check, error) {
 
 // Release is one release-build invocation's resolved settings.
 type Release struct {
-	ModuleDir  string        `koanf:"module_dir"`
-	OutputDir  string        `koanf:"output_dir"`
-	BinaryName string        `koanf:"binary_name"`
-	Version    string        `koanf:"version"`
-	Targets    []string      `koanf:"target"`
-	Timeout    time.Duration `koanf:"timeout"`
+	ModuleDir string        `koanf:"module_dir"`
+	OutputDir string        `koanf:"output_dir"`
+	Binaries  []string      `koanf:"binary"`
+	Version   string        `koanf:"version"`
+	Targets   []string      `koanf:"target"`
+	Timeout   time.Duration `koanf:"timeout"`
 }
 
 // DefaultTargets is the fleet's default per-OS/arch build matrix, in
 // "os/arch" form (Go's own GOOS/GOARCH pairing).
 var DefaultTargets = []string{"linux/amd64", "linux/arm64", "darwin/amd64", "darwin/arm64"}
 
+// DefaultBinaries is the fleet's default binary set, in "name:package" form:
+// this CLI itself, built from its module root.
+var DefaultBinaries = []string{"language-tools:."}
+
 var releaseDefaults = map[string]any{
-	"module_dir":  ".",
-	"output_dir":  "dist",
-	"binary_name": "language-tools",
-	"version":     "dev",
-	"target":      DefaultTargets,
-	"timeout":     5 * time.Minute,
+	"module_dir": ".",
+	"output_dir": "dist",
+	"binary":     DefaultBinaries,
+	"version":    "dev",
+	"target":     DefaultTargets,
+	"timeout":    5 * time.Minute,
 }
 
 // LoadRelease resolves a Release with the same flag > env > file > default

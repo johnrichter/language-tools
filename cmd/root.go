@@ -38,7 +38,7 @@ into checksummed per-OS/arch release archives.`,
   language-tools build --language rust --dir ./crates/example
   language-tools test --language rust --dir ./crates/example --allow-warnings
   language-tools vet --language rust --dir ./crates/example
-  language-tools release build --version v1.2.3 --output-dir dist
+  language-tools release build --version 1.2.3 --output-dir dist
 `, "\n"),
 		SilenceUsage:  true,
 		SilenceErrors: true,

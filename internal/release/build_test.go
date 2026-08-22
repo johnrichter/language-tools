@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -47,14 +48,46 @@ func TestParseTarget(t *testing.T) {
 	}
 }
 
+func TestParseBinarySpec(t *testing.T) {
+	cases := []struct {
+		in       string
+		wantName string
+		wantPkg  string
+		wantErr  bool
+	}{
+		{"language-tools:.", "language-tools", ".", false},
+		{"foo:./cmd/foo", "foo", "./cmd/foo", false},
+		{"noColon", "", "", true},
+		{":./cmd/foo", "", "", true},
+		{"foo:", "", "", true},
+		{"", "", "", true},
+	}
+	for _, c := range cases {
+		got, err := ParseBinarySpec(c.in)
+		if c.wantErr {
+			if err == nil {
+				t.Errorf("ParseBinarySpec(%q): want error, got %+v", c.in, got)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("ParseBinarySpec(%q): unexpected error %v", c.in, err)
+			continue
+		}
+		if got.Name != c.wantName || got.Package != c.wantPkg {
+			t.Errorf("ParseBinarySpec(%q) = %+v, want {%s %s}", c.in, got, c.wantName, c.wantPkg)
+		}
+	}
+}
+
 func TestBuild_RequiresEveryOption(t *testing.T) {
 	base := Options{
-		ModuleDir:  ".",
-		OutputDir:  "dist",
-		BinaryName: "x",
-		Version:    "v1",
-		Targets:    []Target{{OS: "linux", Arch: "amd64"}},
-		Timeout:    time.Minute,
+		ModuleDir: ".",
+		OutputDir: "dist",
+		Binaries:  []Binary{{Name: "x", Package: "."}},
+		Version:   "v1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}},
+		Timeout:   time.Minute,
 	}
 	cases := []struct {
 		name   string
@@ -62,7 +95,7 @@ func TestBuild_RequiresEveryOption(t *testing.T) {
 	}{
 		{"empty ModuleDir", func(o *Options) { o.ModuleDir = "" }},
 		{"empty OutputDir", func(o *Options) { o.OutputDir = "" }},
-		{"empty BinaryName", func(o *Options) { o.BinaryName = "" }},
+		{"empty Binaries", func(o *Options) { o.Binaries = nil }},
 		{"empty Version", func(o *Options) { o.Version = "" }},
 		{"empty Targets", func(o *Options) { o.Targets = nil }},
 	}
@@ -104,12 +137,12 @@ func TestBuild_EndToEnd(t *testing.T) {
 	outputDir := t.TempDir()
 
 	artifacts, err := Build(context.Background(), Options{
-		ModuleDir:  moduleDir,
-		OutputDir:  outputDir,
-		BinaryName: "fixture",
-		Version:    "v0.0.1",
-		Targets:    []Target{{OS: "linux", Arch: "amd64"}, {OS: "darwin", Arch: "arm64"}},
-		Timeout:    2 * time.Minute,
+		ModuleDir: moduleDir,
+		OutputDir: outputDir,
+		Binaries:  []Binary{{Name: "fixture", Package: "."}},
+		Version:   "0.0.1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}, {OS: "darwin", Arch: "arm64"}},
+		Timeout:   2 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -152,6 +185,81 @@ func TestBuild_EndToEnd(t *testing.T) {
 			t.Errorf("checksums.txt missing expected line %q; got %v", wantLine, lines)
 		}
 	}
+
+	// binary-checksums.txt golden row format: "<sha256>  <name>_<version>_<os>_<arch>",
+	// no file extension, matching the fleet's shared provisioner key.
+	binChecksumsPath := filepath.Join(outputDir, "binary-checksums.txt")
+	binRaw, err := os.ReadFile(binChecksumsPath)
+	if err != nil {
+		t.Fatalf("read binary-checksums.txt: %v", err)
+	}
+	binLines := strings.Split(strings.TrimRight(string(binRaw), "\n"), "\n")
+	if len(binLines) != len(artifacts) {
+		t.Fatalf("binary-checksums.txt has %d lines, want %d", len(binLines), len(artifacts))
+	}
+	for _, a := range artifacts {
+		wantLine := fmt.Sprintf("%s  fixture_0.0.1_%s_%s", a.BinarySHA256, a.Target.OS, a.Target.Arch)
+		found := false
+		for _, l := range binLines {
+			if l == wantLine {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("binary-checksums.txt missing expected line %q; got %v", wantLine, binLines)
+		}
+	}
+}
+
+// TestBuild_MultipleBinaries pins the repeatable --binary contract at the
+// library level: one run of two binaries across two targets produces four
+// archives, one checksums.txt row per archive, and one binary-checksums.txt
+// row per extracted binary — each keyed on its own name, not the other's.
+func TestBuild_MultipleBinaries(t *testing.T) {
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not on PATH")
+	}
+	moduleDir := fixtureModule(t)
+	outputDir := t.TempDir()
+
+	artifacts, err := Build(context.Background(), Options{
+		ModuleDir: moduleDir,
+		OutputDir: outputDir,
+		Binaries:  []Binary{{Name: "alpha", Package: "."}, {Name: "beta", Package: "."}},
+		Version:   "0.0.1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}},
+		Timeout:   2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if len(artifacts) != 2 {
+		t.Fatalf("artifacts = %d, want 2", len(artifacts))
+	}
+
+	entries, err := os.ReadDir(outputDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archiveCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tar.gz") {
+			archiveCount++
+		}
+	}
+	if archiveCount != 2 {
+		t.Errorf("archive count = %d, want 2", archiveCount)
+	}
+
+	binRaw, err := os.ReadFile(filepath.Join(outputDir, "binary-checksums.txt"))
+	if err != nil {
+		t.Fatalf("read binary-checksums.txt: %v", err)
+	}
+	for _, wantKey := range []string{"alpha_0.0.1_linux_amd64", "beta_0.0.1_linux_amd64"} {
+		if !strings.Contains(string(binRaw), wantKey) {
+			t.Errorf("binary-checksums.txt missing key %q:\n%s", wantKey, binRaw)
+		}
+	}
 }
 
 // A build target no Go toolchain recognizes must fail the whole run, not
@@ -165,12 +273,12 @@ func TestBuild_UnknownTargetAbortsWholeRun(t *testing.T) {
 	outputDir := t.TempDir()
 
 	_, err := Build(context.Background(), Options{
-		ModuleDir:  moduleDir,
-		OutputDir:  outputDir,
-		BinaryName: "fixture",
-		Version:    "v0.0.1",
-		Targets:    []Target{{OS: "linux", Arch: "amd64"}, {OS: "bogus-os", Arch: "bogus-arch"}},
-		Timeout:    2 * time.Minute,
+		ModuleDir: moduleDir,
+		OutputDir: outputDir,
+		Binaries:  []Binary{{Name: "fixture", Package: "."}},
+		Version:   "0.0.1",
+		Targets:   []Target{{OS: "linux", Arch: "amd64"}, {OS: "bogus-os", Arch: "bogus-arch"}},
+		Timeout:   2 * time.Minute,
 	})
 	if err == nil {
 		t.Fatal("Build with an unbuildable target: want error, got none")
@@ -179,6 +287,9 @@ func TestBuild_UnknownTargetAbortsWholeRun(t *testing.T) {
 	for _, e := range entries {
 		if e.Name() == "checksums.txt" {
 			t.Error("checksums.txt was written despite the run aborting on a bad target")
+		}
+		if e.Name() == "binary-checksums.txt" {
+			t.Error("binary-checksums.txt was written despite the run aborting on a bad target")
 		}
 	}
 }

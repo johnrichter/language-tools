@@ -41,35 +41,65 @@ func ParseTarget(s string) (Target, error) {
 	return Target{OS: osName, Arch: arch}, nil
 }
 
+// Binary is one named main package this build produces a binary for.
+type Binary struct {
+	// Name is the binary's base name, embedded in each of its archives'
+	// filenames, the file inside them, and its binary-checksums.txt key.
+	Name string
+	// Package is the `go build` argument naming its main package, resolved
+	// relative to Options.ModuleDir (e.g. "." or "./cmd/foo").
+	Package string
+}
+
+// ParseBinarySpec parses "name:package" (e.g. "language-tools:.") into a
+// Binary.
+func ParseBinarySpec(s string) (Binary, error) {
+	name, pkg, ok := strings.Cut(s, ":")
+	if !ok || name == "" || pkg == "" {
+		return Binary{}, fmt.Errorf("release: invalid binary %q, want \"name:package\"", s)
+	}
+	return Binary{Name: name, Package: pkg}, nil
+}
+
 // Options configures Build.
 type Options struct {
-	// ModuleDir is the Go module root to build (its main package).
+	// ModuleDir is the Go module root every Binary's Package is resolved
+	// against.
 	ModuleDir string
-	// OutputDir is where archives and the checksum manifest are written.
+	// OutputDir is where archives and the checksum manifests are written.
 	OutputDir string
-	// BinaryName is the binary's base name, embedded in each archive's
-	// filename and the file inside it.
-	BinaryName string
-	// Version tags each archive's filename, e.g. "v1.2.3".
+	// Binaries is the set of named main packages to build. Empty is
+	// rejected — a caller names its binaries explicitly rather than relying
+	// on an implicit default here.
+	Binaries []Binary
+	// Version tags each archive's filename and binary-checksums.txt key,
+	// e.g. "1.2.3" — no leading "v"; the fleet's shared provisioner
+	// convention adds that itself where a "v"-prefixed tag is needed.
 	Version string
 	// Targets is the build matrix. Empty is rejected — a caller names its
 	// targets explicitly rather than relying on an implicit default here.
 	Targets []Target
-	// Timeout bounds each per-target `go build` invocation.
+	// Timeout bounds each per-binary-per-target `go build` invocation.
 	Timeout time.Duration
 }
 
-// Artifact is one target's packaged build output.
+// Artifact is one binary/target pair's packaged build output.
 type Artifact struct {
+	Binary         Binary
 	Target         Target
 	ArchivePath    string
 	ChecksumSHA256 string
+	// BinarySHA256 is the digest of the extracted binary itself, distinct
+	// from ChecksumSHA256 (the archive's digest).
+	BinarySHA256 string
 }
 
-// Build cross-compiles opts.BinaryName for every target in opts.Targets,
-// archives each as a .tar.gz, and writes a checksums.txt manifest alongside
-// them. It returns the artifacts in target order; a failure on any target
-// aborts the whole run rather than shipping a partial release.
+// Build cross-compiles every opts.Binaries entry for every target in
+// opts.Targets, archives each as a .tar.gz, and writes checksums.txt (one
+// row per archive) and binary-checksums.txt (one row per extracted binary)
+// alongside them. It returns the artifacts in binary-then-target order; a
+// failure on any of them aborts the whole run rather than shipping a
+// partial release.
 func Build(ctx context.Context, opts Options) ([]Artifact, error) {
 	if opts.ModuleDir == "" {
 		return nil, fmt.Errorf("release: options.ModuleDir is required")
@@ -77,8 +107,8 @@ func Build(ctx context.Context, opts Options) ([]Artifact, error) {
 	if opts.OutputDir == "" {
 		return nil, fmt.Errorf("release: options.OutputDir is required")
 	}
-	if opts.BinaryName == "" {
-		return nil, fmt.Errorf("release: options.BinaryName is required")
+	if len(opts.Binaries) == 0 {
+		return nil, fmt.Errorf("release: options.Binaries is required")
 	}
 	if opts.Version == "" {
 		return nil, fmt.Errorf("release: options.Version is required")
@@ -90,23 +120,28 @@ func Build(ctx context.Context, opts Options) ([]Artifact, error) {
 		return nil, fmt.Errorf("release: create output dir %s: %w", opts.OutputDir, err)
 	}
 
-	artifacts := make([]Artifact, 0, len(opts.Targets))
-	for _, target := range opts.Targets {
-		artifact, err := buildOne(ctx, opts, target)
-		if err != nil {
-			return nil, fmt.Errorf("release: build %s: %w", target, err)
+	artifacts := make([]Artifact, 0, len(opts.Binaries)*len(opts.Targets))
+	for _, binary := range opts.Binaries {
+		for _, target := range opts.Targets {
+			artifact, err := buildOne(ctx, opts, binary, target)
+			if err != nil {
+				return nil, fmt.Errorf("release: build %s for %s: %w", binary.Name, target, err)
+			}
+			artifacts = append(artifacts, artifact)
 		}
-		artifacts = append(artifacts, artifact)
 	}
 	if err := writeChecksums(opts.OutputDir, artifacts); err != nil {
+		return nil, err
+	}
+	if err := writeBinaryChecksums(opts.OutputDir, opts.Version, artifacts); err != nil {
 		return nil, err
 	}
 	return artifacts, nil
 }
 
-// buildOne compiles opts.BinaryName for target into a temporary binary,
-// archives it, and writes the archive plus its checksum.
-func buildOne(ctx context.Context, opts Options, target Target) (Artifact, error) {
+// buildOne compiles binary for target into a temporary binary, archives it,
+// and writes the archive plus its checksum.
+func buildOne(ctx context.Context, opts Options, binary Binary, target Target) (Artifact, error) {
 	workDir, err := os.MkdirTemp("", "language-tools-release-*")
 	if err != nil {
 		return Artifact{}, fmt.Errorf("stage build dir: %w", err)
@@ -117,14 +152,14 @@ func buildOne(ctx context.Context, opts Options, target Target) (Artifact, error
 		}
 	}()
 
-	binName := opts.BinaryName
+	binName := binary.Name
 	if target.OS == "windows" {
 		binName += ".exe"
 	}
 	binPath := filepath.Join(workDir, binName)
 
 	env := append(os.Environ(), "GOOS="+target.OS, "GOARCH="+target.Arch, "CGO_ENABLED=0")
-	argv := []string{"build", "-trimpath", "-ldflags=-s -w", "-o", binPath, "."}
+	argv := []string{"build", "-trimpath", "-ldflags=-s -w", "-o", binPath, binary.Package}
 	execRes, err := sysops.Run(ctx, "go", argv, sysops.Options{Dir: opts.ModuleDir, Env: env, Timeout: opts.Timeout})
 	if err != nil {
 		return Artifact{}, fmt.Errorf("run go build: %w", err)
@@ -138,7 +173,7 @@ func buildOne(ctx context.Context, opts Options, target Target) (Artifact, error
 		return Artifact{}, fmt.Errorf("read built binary: %w", err)
 	}
 
-	archiveName := fmt.Sprintf("%s_%s_%s_%s.tar.gz", opts.BinaryName, opts.Version, target.OS, target.Arch)
+	archiveName := fmt.Sprintf("%s_%s_%s_%s.tar.gz", binary.Name, opts.Version, target.OS, target.Arch)
 	archiveBytes, err := archiveTarGz(binName, binBytes)
 	if err != nil {
 		return Artifact{}, err
@@ -148,11 +183,14 @@ func buildOne(ctx context.Context, opts Options, target Target) (Artifact, error
 		return Artifact{}, fmt.Errorf("write archive %s: %w", archivePath, err)
 	}
 
-	sum := sha256.Sum256(archiveBytes)
+	archiveSum := sha256.Sum256(archiveBytes)
+	binSum := sha256.Sum256(binBytes)
 	return Artifact{
+		Binary:         binary,
 		Target:         target,
 		ArchivePath:    archivePath,
-		ChecksumSHA256: hex.EncodeToString(sum[:]),
+		ChecksumSHA256: hex.EncodeToString(archiveSum[:]),
+		BinarySHA256:   hex.EncodeToString(binSum[:]),
 	}, nil
 }
 
@@ -195,6 +233,30 @@ func writeChecksums(outputDir string, artifacts []Artifact) error {
 	path := filepath.Join(outputDir, "checksums.txt")
 	if err := fsx.WriteAtomic(path, []byte(strings.Join(lines, "")), 0o644); err != nil {
 		return fmt.Errorf("release: write checksums manifest: %w", err)
+	}
+	return nil
+}
+
+// binaryChecksumKey renders the fleet's shared provisioner key: four
+// underscore-joined tokens (name, version, os, arch) with no file
+// extension — the same key a provisioner derives from an archive filename
+// after stripping ".tar.gz".
+func binaryChecksumKey(name, version string, target Target) string {
+	return fmt.Sprintf("%s_%s_%s_%s", name, version, target.OS, target.Arch)
+}
+
+// writeBinaryChecksums writes binary-checksums.txt: one "<sha256>  <key>"
+// line per artifact, keyed on the extracted binary rather than its archive
+// — the digest a provisioner checks after unpacking, sorted by key.
+func writeBinaryChecksums(outputDir, version string, artifacts []Artifact) error {
+	lines := make([]string, len(artifacts))
+	for i, a := range artifacts {
+		lines[i] = fmt.Sprintf("%s  %s\n", a.BinarySHA256, binaryChecksumKey(a.Binary.Name, version, a.Target))
+	}
+	sort.Strings(lines)
+	path := filepath.Join(outputDir, "binary-checksums.txt")
+	if err := fsx.WriteAtomic(path, []byte(strings.Join(lines, "")), 0o644); err != nil {
+		return fmt.Errorf("release: write binary-checksums manifest: %w", err)
 	}
 	return nil
 }

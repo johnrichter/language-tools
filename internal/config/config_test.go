@@ -123,7 +123,7 @@ func releaseFlags() *pflag.FlagSet {
 	fs := pflag.NewFlagSet("release-build", pflag.ContinueOnError)
 	fs.String("module-dir", ".", "")
 	fs.String("output-dir", "dist", "")
-	fs.String("binary-name", "language-tools", "")
+	fs.StringSlice("binary", DefaultBinaries, "")
 	fs.String("version", "dev", "")
 	fs.StringSlice("target", DefaultTargets, "")
 	fs.Duration("timeout", 0, "")
@@ -135,11 +135,31 @@ func TestLoadRelease_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadRelease: %v", err)
 	}
-	if cfg.OutputDir != "dist" || cfg.BinaryName != "language-tools" || cfg.Version != "dev" {
+	if cfg.OutputDir != "dist" || cfg.Version != "dev" {
 		t.Errorf("unexpected defaults: %+v", cfg)
+	}
+	if len(cfg.Binaries) != len(DefaultBinaries) || cfg.Binaries[0] != DefaultBinaries[0] {
+		t.Errorf("binaries = %v, want %v", cfg.Binaries, DefaultBinaries)
 	}
 	if len(cfg.Targets) != len(DefaultTargets) {
 		t.Errorf("targets = %v, want %v", cfg.Targets, DefaultTargets)
+	}
+}
+
+func TestLoadRelease_FlagOverridesBinaries(t *testing.T) {
+	fs := releaseFlags()
+	if err := fs.Set("binary", "foo:./cmd/foo"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fs.Set("binary", "bar:./cmd/bar"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadRelease(fs, "")
+	if err != nil {
+		t.Fatalf("LoadRelease: %v", err)
+	}
+	if len(cfg.Binaries) != 2 || cfg.Binaries[0] != "foo:./cmd/foo" || cfg.Binaries[1] != "bar:./cmd/bar" {
+		t.Errorf("binaries = %v, want [foo:./cmd/foo bar:./cmd/bar]", cfg.Binaries)
 	}
 }
 

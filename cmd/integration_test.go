@@ -587,7 +587,7 @@ func requireGofmt(t *testing.T) {
 func TestReleaseBuild_ProducesArchivesAndChecksums(t *testing.T) {
 	bin := buildCLI(t)
 	outDir := t.TempDir()
-	r, exit := runCLI(t, bin, "release", "build", "--version", "v0.0.1-test", "--output-dir", outDir, "--target", "linux/amd64")
+	r, exit := runCLI(t, bin, "release", "build", "--version", "0.0.1-test", "--output-dir", outDir, "--target", "linux/amd64")
 	if r.Status != "success" || exit != 0 {
 		t.Fatalf("status=%s exit=%d, want success/0: %+v", r.Status, exit, r)
 	}
@@ -596,10 +596,14 @@ func TestReleaseBuild_ProducesArchivesAndChecksums(t *testing.T) {
 		t.Fatalf("read output dir: %v", err)
 	}
 	hasChecksums := false
+	hasBinaryChecksums := false
 	hasArchive := false
 	for _, e := range entries {
 		if e.Name() == "checksums.txt" {
 			hasChecksums = true
+		}
+		if e.Name() == "binary-checksums.txt" {
+			hasBinaryChecksums = true
 		}
 		if strings.HasSuffix(e.Name(), ".tar.gz") {
 			hasArchive = true
@@ -608,8 +612,77 @@ func TestReleaseBuild_ProducesArchivesAndChecksums(t *testing.T) {
 	if !hasChecksums {
 		t.Error("release build did not write checksums.txt")
 	}
+	if !hasBinaryChecksums {
+		t.Error("release build did not write binary-checksums.txt")
+	}
 	if !hasArchive {
 		t.Error("release build did not write any archive")
+	}
+}
+
+// TestReleaseBuild_TwoBinaryFlagsProduceTwoArchivesAndBothManifests is the
+// task's core acceptance: a repeatable --binary flag builds every named
+// binary for every target in one invocation, and binary-checksums.txt keys
+// each row on "<name>_<version>_<os>_<arch>" — the fleet's shared
+// provisioner format (no leading "v", no file extension).
+func TestReleaseBuild_TwoBinaryFlagsProduceTwoArchivesAndBothManifests(t *testing.T) {
+	bin := buildCLI(t)
+	outDir := t.TempDir()
+	r, exit := runCLI(t, bin, "release", "build",
+		"--version", "0.5.0",
+		"--output-dir", outDir,
+		"--target", "linux/amd64",
+		"--binary", "language-tools:.",
+		"--binary", "language-tools-alt:.",
+	)
+	if r.Status != "success" || exit != 0 {
+		t.Fatalf("status=%s exit=%d, want success/0: %+v", r.Status, exit, r)
+	}
+
+	entries, err := os.ReadDir(outDir)
+	if err != nil {
+		t.Fatalf("read output dir: %v", err)
+	}
+	archiveCount := 0
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tar.gz") {
+			archiveCount++
+		}
+	}
+	if archiveCount != 2 {
+		t.Fatalf("archive count = %d, want 2", archiveCount)
+	}
+
+	checksums, err := os.ReadFile(filepath.Join(outDir, "checksums.txt"))
+	if err != nil {
+		t.Fatalf("read checksums.txt: %v", err)
+	}
+	if lines := strings.Split(strings.TrimRight(string(checksums), "\n"), "\n"); len(lines) != 2 {
+		t.Errorf("checksums.txt has %d lines, want 2: %q", len(lines), checksums)
+	}
+
+	binChecksums, err := os.ReadFile(filepath.Join(outDir, "binary-checksums.txt"))
+	if err != nil {
+		t.Fatalf("read binary-checksums.txt: %v", err)
+	}
+	lines := strings.Split(strings.TrimRight(string(binChecksums), "\n"), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("binary-checksums.txt has %d lines, want 2: %q", len(lines), binChecksums)
+	}
+	digestLine := regexp.MustCompile(`^[0-9a-f]{64}  [a-z0-9-]+_0\.5\.0_linux_amd64$`)
+	for _, key := range []string{"language-tools_0.5.0_linux_amd64", "language-tools-alt_0.5.0_linux_amd64"} {
+		found := false
+		for _, l := range lines {
+			if strings.HasSuffix(l, key) {
+				found = true
+				if !digestLine.MatchString(l) {
+					t.Errorf("binary-checksums.txt row %q does not match the provisioner row format", l)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("binary-checksums.txt missing key %q: %q", key, binChecksums)
+		}
 	}
 }
 

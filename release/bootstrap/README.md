@@ -40,14 +40,14 @@ Run the release-build command, which cross-compiles the binary for all targets a
 
 ```sh
 mkdir -p dist
-./language-tools release build --version v1.0.0 --output-dir dist
+./language-tools release build --version 1.0.0 --output-dir dist
 ```
 
 Output:
-- `dist/language-tools_v1.0.0_linux_amd64.tar.gz`
-- `dist/language-tools_v1.0.0_linux_arm64.tar.gz`
-- `dist/language-tools_v1.0.0_darwin_amd64.tar.gz`
-- `dist/language-tools_v1.0.0_darwin_arm64.tar.gz`
+- `dist/language-tools_1.0.0_linux_amd64.tar.gz`
+- `dist/language-tools_1.0.0_linux_arm64.tar.gz`
+- `dist/language-tools_1.0.0_darwin_amd64.tar.gz`
+- `dist/language-tools_1.0.0_darwin_arm64.tar.gz`
 - `dist/checksums.txt` (SHA256 manifest for all archives)
 
 ### 4. Verify Checksums
@@ -98,7 +98,7 @@ From v1.1.0 onward, the release process becomes self-hosted:
 1. Ensure code is ready (CI checks, guards).
 2. Use the pre-built language-tools binary to create the next release:
    ```sh
-   language-tools release build --version v1.1.0 --output-dir dist
+   language-tools release build --version 1.1.0 --output-dir dist
    ```
 3. Verify checksums.
 4. Tag the commit.

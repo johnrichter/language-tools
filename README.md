@@ -37,7 +37,7 @@ language-tools vet    --language <lang> --dir <path>   # same, for vet
 language-tools release build --version <ver> --output-dir <dir>  # this binary's own archives+checksums
 ```
 
-`build`/`test`/`lint`/`format`/`vet` share `--log-dir` (uncapped diagnostic log, default `.language-tools/log`), `--cache-dir` (content-hash impact-skip cache, disabled by default), `--allow-warnings` (default off — warnings fail the run), and `--timeout`. `release build` defaults `--target` to `linux/amd64,linux/arm64,darwin/amd64,darwin/arm64` and writes a `checksums.txt` manifest alongside the archives.
+`build`/`test`/`lint`/`format`/`vet` share `--log-dir` (uncapped diagnostic log, default `.language-tools/log`), `--cache-dir` (content-hash impact-skip cache, disabled by default), `--allow-warnings` (default off — warnings fail the run), and `--timeout`. `release build` defaults `--target` to `linux/amd64,linux/arm64,darwin/amd64,darwin/arm64` and `--binary` (repeatable, `name:package`) to `language-tools:.`; it writes a `checksums.txt` manifest (one row per archive) and a `binary-checksums.txt` manifest (one row per extracted binary, keyed `<name>_<version>_<os>_<arch>` with no leading `v`) alongside the archives.
 
 Every setting is also a `LANGUAGE_TOOLS_<NAME>` environment variable and a YAML `--config` file key, layered flag > env > file > default (e.g. `--allow-warnings` / `LANGUAGE_TOOLS_ALLOW_WARNINGS` / `allow_warnings:` in the config file).
 
@@ -47,5 +47,5 @@ Currently only the `rust` (cargo) toolchain adapter is registered upstream; `bui
 
 ```sh
 language-tools build --language rust --dir ./crates/example
-language-tools release build --version v1.2.3 --output-dir dist
+language-tools release build --version 1.2.3 --output-dir dist
 ```
